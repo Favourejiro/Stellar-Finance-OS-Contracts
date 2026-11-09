@@ -11,6 +11,7 @@ pub enum InvoiceStatus {
     Open,
     Paid,
     Void,
+    Closed,
 }
 
 #[contracttype]
@@ -45,4 +46,5 @@ pub enum Error {
     ArithmeticOverflow = 7,
     InvalidToken = 8,
     NotBusiness = 9,
+    NothingPaid = 10,
 }
