@@ -78,6 +78,14 @@ proptest! {
             prop_assert_eq!(inv.status == InvoiceStatus::Paid, inv.paid == inv.amount);
         }
     }
+    /// After `close`, no payment is accepted and `paid` stays frozen.
+    #[test]
+    fn no_payment_accepted_after_close(
+        amount in 2i128..1_000,
+        first in 1i128..400,
+        attempts in proptest::collection::vec(-5i128..400, 1..8),
+    ) {
+        let first = first.min(amount - 1);
 
     /// For any two businesses sharing one invoice id and any payment
     /// sequence aimed at `honest`: only `honest` is ever credited, and the
@@ -95,6 +103,38 @@ proptest! {
         let admin = Address::generate(&env);
         let sac = env.register_stellar_asset_contract_v2(admin.clone());
         let token = TokenClient::new(&env, &sac.address());
+        let business = Address::generate(&env);
+        let payer = Address::generate(&env);
+        StellarAssetClient::new(&env, &token.address).mock_all_auths().mint(&payer, &10_000);
+
+        let id = BytesN::from_array(&env, &[1; 32]);
+        let content = BytesN::from_array(&env, &[2; 32]);
+        let reg_args = (business.clone(), id.clone(), token.address.clone(), amount, content.clone()).into_val(&env);
+        mock(&env, &business, &registry_id, "register", reg_args, &[]);
+        registry.register(&business, &id, &token.address, &amount, &content);
+
+        let pay = |a: i128| {
+            let args = (payer.clone(), id.clone(), a).into_val(&env);
+            let sub = [MockAuthInvoke {
+                contract: &token.address,
+                fn_name: "transfer",
+                args: (payer.clone(), business.clone(), a).into_val(&env),
+                sub_invokes: &[],
+            }];
+            mock(&env, &payer, &registry_id, "pay", args, &sub);
+            registry.try_pay(&payer, &id, &a)
+        };
+        pay(first).unwrap().unwrap();
+        let close_args = (business.clone(), id.clone()).into_val(&env);
+        mock(&env, &business, &registry_id, "close", close_args, &[]);
+        registry.close(&business, &id);
+
+        for a in attempts {
+            prop_assert!(pay(a).is_err() || pay(a).unwrap().is_err());
+            let inv = registry.get(&id);
+            prop_assert_eq!(inv.paid, first);
+            prop_assert_eq!(inv.status, InvoiceStatus::Closed);
+            prop_assert_eq!(token.balance(&business), first);
         let honest = Address::generate(&env);
         let squatter = Address::generate(&env);
         let payer = Address::generate(&env);

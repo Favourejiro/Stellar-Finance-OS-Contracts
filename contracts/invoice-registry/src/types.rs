@@ -11,6 +11,7 @@ pub enum InvoiceStatus {
     Open,
     Paid,
     Void,
+    Closed,
 }
 
 #[contracttype]
@@ -48,4 +49,5 @@ pub enum Error {
     /// Reserved. No longer returned: invoices are keyed by `(business, id)`,
     /// so another business's invoice is simply `InvoiceNotFound`.
     NotBusiness = 9,
+    NothingPaid = 10,
 }

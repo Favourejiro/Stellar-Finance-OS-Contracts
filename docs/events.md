@@ -32,6 +32,7 @@ position to match all ids.
 | invoice-registry | `registered` | `AAAADwAAAApyZWdpc3RlcmVkAAA=` |
 | invoice-registry | `paid` | `AAAADwAAAARwYWlk` |
 | invoice-registry | `voided` | `AAAADwAAAAZ2b2lkZWQAAA==` |
+| invoice-registry | `closed` | `AAAADwAAAAZjbG9zZWQAAA==` |
 
 These values are checked by tests (`event_topic_xdr_matches_docs` in each
 contract), so this table can't silently drift from the code.
@@ -74,6 +75,9 @@ contract), so this table can't silently drift from the code.
 | Event | Fields (ScVal type) |
 |---|---|
 | `registered` | `amount` (I128), `business` (Address), `token` (Address) |
+| `paid` | `amount` (I128), `payer` (Address), `total_paid` (I128) |
+| `voided` | (none) |
+| `closed` | `outstanding` (I128), `paid` (I128) |
 | `paid` | `amount` (I128), `business` (Address), `payer` (Address), `total_paid` (I128) |
 | `voided` | `business` (Address) |
 
@@ -91,6 +95,9 @@ contract), so this table can't silently drift from the code.
 
 - An invoice is identified by `(business, id)`; the same `id` can exist under several businesses. Key your records on both.
 - `registered`: create the record (Open).
+- `paid`: set `paid = total_paid`. Mark Paid when `total_paid` equals the registered `amount`.
+- `voided`: mark Void.
+- `closed`: mark Closed (terminal). `outstanding` equals `amount - paid`.
 - `paid`: look up `(business, id)` and set `paid = total_paid`. Mark Paid when `total_paid` equals the registered `amount`.
 - `voided`: look up `(business, id)` and mark Void.
 

@@ -38,3 +38,12 @@ pub struct Voided {
     pub id: BytesN<32>,
     pub business: Address,
 }
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Closed {
+    #[topic]
+    pub id: BytesN<32>,
+    pub paid: i128,
+    pub outstanding: i128,
+}

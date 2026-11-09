@@ -22,6 +22,9 @@ event shape or error code is a **major** bump.
     need regenerating (`./scripts/bindings.sh`).
 
 ### Added
+- `invoice-registry`: `close` entrypoint, `InvoiceStatus::Closed`, `closed`
+  event and error 10 `NothingPaid`, so a partially paid invoice can reach a
+  terminal state.
 - `approval-vault` error 14 `InvalidToken`: `propose` now rejects a `token`
   that does not implement the token interface, instead of letting the
   proposal collect approvals and fail in `execute` with a host error.

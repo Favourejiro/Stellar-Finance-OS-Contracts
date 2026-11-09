@@ -118,6 +118,21 @@ impl Setup<'_> {
         }
     }
 
+    fn try_close(
+        &self,
+        signer: &Address,
+        business: &Address,
+        id: &BytesN<32>,
+    ) -> Result<(), Option<Error>> {
+        let args = (business.clone(), id.clone()).into_val(&self.env);
+        auth(&self.env, signer, &self.registry_id, "close", args, &[]);
+        match self.registry.try_close(business, id) {
+            Ok(Ok(())) => Ok(()),
+            Err(Ok(e)) => Err(Some(e)),
+            _ => Err(None),
+        }
+    }
+
     fn try_register(
         &self,
         signer: &Address,
@@ -483,6 +498,9 @@ fn pay_fails_atomically_with_insufficient_funds() {
     let s = Setup::new();
     let id = s.register(1, 500);
     let payer = s.payer(100);
+    // The token's own InsufficientBalance (#10) is decoded with this
+    // contract's Error enum, so don't assert on the exact variant.
+    assert!(s.try_pay(&payer, &payer, &id, 200).is_err());
     assert_eq!(s.try_pay(&payer, &payer, &s.business, &id, 200), Err(None));
     // State update is rolled back with the failed transfer.
     let inv = s.registry.get(&s.business, &id);
@@ -600,6 +618,119 @@ fn void_rejects_unknown_invoice() {
         s.try_void(&s.business, &s.business, &s.hash(4)),
         Err(Some(Error::InvoiceNotFound))
     );
+}
+
+// ---------------------------------------------------------------- close
+
+#[test]
+fn close_marks_closed_and_emits_event() {
+    let s = Setup::new();
+    let id = s.register(1, 500);
+    let payer = s.payer(1_000);
+    s.pay(&payer, &id, 200);
+    assert_eq!(s.try_close(&s.business, &s.business, &id), Ok(()));
+    let expected = events::Closed {
+        id: id.clone(),
+        paid: 200,
+        outstanding: 300,
+    };
+    assert_eq!(
+        s.env
+            .events()
+            .all()
+            .filter_by_contract(&s.registry_id)
+            .events(),
+        [expected.to_xdr(&s.env, &s.registry_id)]
+    );
+    assert_eq!(s.registry.get(&id).status, InvoiceStatus::Closed);
+}
+
+#[test]
+fn close_blocks_payment() {
+    let s = Setup::new();
+    let id = s.register(1, 500);
+    let payer = s.payer(1_000);
+    s.pay(&payer, &id, 200);
+    s.try_close(&s.business, &s.business, &id).unwrap();
+    assert_eq!(
+        s.try_pay(&payer, &payer, &id, 100),
+        Err(Some(Error::NotOpen))
+    );
+    assert_eq!(s.token.balance(&payer), 800);
+}
+
+#[test]
+fn close_rejects_wrong_signer() {
+    let s = Setup::new();
+    let id = s.register(1, 500);
+    let payer = s.payer(1_000);
+    s.pay(&payer, &id, 200);
+    let attacker = Address::generate(&s.env);
+    assert_eq!(s.try_close(&attacker, &s.business, &id), Err(None));
+}
+
+#[test]
+fn close_rejects_other_business() {
+    let s = Setup::new();
+    let id = s.register(1, 500);
+    let payer = s.payer(1_000);
+    s.pay(&payer, &id, 200);
+    let other = Address::generate(&s.env);
+    assert_eq!(
+        s.try_close(&other, &other, &id),
+        Err(Some(Error::NotBusiness))
+    );
+}
+
+#[test]
+fn close_rejects_unknown_invoice() {
+    let s = Setup::new();
+    assert_eq!(
+        s.try_close(&s.business, &s.business, &s.hash(4)),
+        Err(Some(Error::InvoiceNotFound))
+    );
+}
+
+#[test]
+fn close_rejects_paid_void_and_closed() {
+    let s = Setup::new();
+    let payer = s.payer(1_000);
+    let paid = s.register(1, 100);
+    s.pay(&payer, &paid, 100);
+    let voided = s.register(2, 100);
+    s.try_void(&s.business, &s.business, &voided).unwrap();
+    let closed = s.register(3, 100);
+    s.pay(&payer, &closed, 10);
+    s.try_close(&s.business, &s.business, &closed).unwrap();
+    for id in [paid, voided, closed] {
+        assert_eq!(
+            s.try_close(&s.business, &s.business, &id),
+            Err(Some(Error::NotOpen))
+        );
+    }
+}
+
+#[test]
+fn close_rejects_nothing_paid() {
+    let s = Setup::new();
+    let id = s.register(1, 500);
+    assert_eq!(
+        s.try_close(&s.business, &s.business, &id),
+        Err(Some(Error::NothingPaid))
+    );
+}
+
+#[test]
+fn close_extends_invoice_ttl() {
+    let s = Setup::new();
+    let id = s.register(1, 500);
+    let payer = s.payer(1_000);
+    s.pay(&payer, &id, 200);
+    let step = 2 * finance_os_common::ttl::DAY_IN_LEDGERS;
+    s.env.ledger().with_mut(|l| l.sequence_number += step);
+    assert!(invoice_ttl(&s, &id) < finance_os_common::ttl::PERSISTENT_LIFETIME_THRESHOLD);
+    s.try_close(&s.business, &s.business, &id).unwrap();
+    assert!(invoice_ttl(&s, &id) >= finance_os_common::ttl::PERSISTENT_LIFETIME_THRESHOLD);
 }
 
 // ---------------------------------------------------------------- storage TTL
@@ -971,6 +1102,15 @@ fn event_topic_xdr_matches_docs() {
             }
             .to_xdr(&env, &contract),
             "AAAADwAAAAZ2b2lkZWQAAA=="
+        ),
+        (
+            events::Closed {
+                id: id.clone(),
+                paid: 1,
+                outstanding: 0
+            }
+            .to_xdr(&env, &contract),
+            "AAAADwAAAAZjbG9zZWQAAA=="
         ),
     ];
     for (ev, expected) in cases {
