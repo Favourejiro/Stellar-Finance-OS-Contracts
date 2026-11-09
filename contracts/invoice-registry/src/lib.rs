@@ -42,7 +42,7 @@ impl InvoiceRegistry {
         if !amount::is_positive(amount) {
             return Err(Error::InvalidAmount);
         }
-        if storage::has_invoice(&env, &id) {
+        if storage::has_invoice(&env, &business, &id) {
             return Err(Error::InvoiceExists);
         }
         require_token(&env, &token)?;
@@ -69,19 +69,28 @@ impl InvoiceRegistry {
         Ok(())
     }
 
-    /// Pay `amount` towards an Open invoice. Tokens move straight from
-    /// `payer` to the invoice's `business` address. Partial payments are
+    /// Pay `amount` towards `business`'s Open invoice `id`. Tokens move
+    /// straight from `payer` to `business`. The invoice is looked up by
+    /// `(business, id)`, so an invoice another address registered under the
+    /// same `id` can never receive this payment. Partial payments are
     /// allowed. The invoice becomes Paid once `paid == amount`.
     ///
     /// Overpayment is rejected (README §5 lists it as a failure path), so
     /// `paid` can never exceed `amount`.
-    pub fn pay(env: Env, payer: Address, id: BytesN<32>, amount: i128) -> Result<(), Error> {
+    pub fn pay(
+        env: Env,
+        payer: Address,
+        business: Address,
+        id: BytesN<32>,
+        amount: i128,
+    ) -> Result<(), Error> {
         payer.require_auth();
         storage::bump_instance(&env);
         if !amount::is_positive(amount) {
             return Err(Error::InvalidAmount);
         }
-        let mut invoice = storage::get_invoice(&env, &id).ok_or(Error::InvoiceNotFound)?;
+        let mut invoice =
+            storage::get_invoice(&env, &business, &id).ok_or(Error::InvoiceNotFound)?;
         if invoice.status != InvoiceStatus::Open {
             return Err(Error::NotOpen);
         }
@@ -100,10 +109,11 @@ impl InvoiceRegistry {
         }
         storage::set_invoice(&env, &invoice);
 
-        token::TokenClient::new(&env, &invoice.token).transfer(&payer, &invoice.business, &amount);
+        token::TokenClient::new(&env, &invoice.token).transfer(&payer, &business, &amount);
 
         Paid {
             id,
+            business,
             payer,
             amount,
             total_paid,
@@ -112,15 +122,13 @@ impl InvoiceRegistry {
         Ok(())
     }
 
-    /// Void an Open invoice that has received no payments. Only the
-    /// invoice's own business may void it.
+    /// Void an Open invoice that has received no payments. `business` can
+    /// only reach its own invoices: the lookup is by `(business, id)`.
     pub fn void(env: Env, business: Address, id: BytesN<32>) -> Result<(), Error> {
         business.require_auth();
         storage::bump_instance(&env);
-        let mut invoice = storage::get_invoice(&env, &id).ok_or(Error::InvoiceNotFound)?;
-        if invoice.business != business {
-            return Err(Error::NotBusiness);
-        }
+        let mut invoice =
+            storage::get_invoice(&env, &business, &id).ok_or(Error::InvoiceNotFound)?;
         if invoice.status != InvoiceStatus::Open {
             return Err(Error::NotOpen);
         }
@@ -130,7 +138,39 @@ impl InvoiceRegistry {
         invoice.status = InvoiceStatus::Void;
         storage::set_invoice(&env, &invoice);
 
-        Voided { id }.publish(&env);
+        Voided { id, business }.publish(&env);
+        Ok(())
+    }
+
+    /// Close a partially paid Open invoice (discount, write-off, or remainder
+    /// settled off-chain). Only the invoice's own business may close it.
+    /// Zero-paid invoices must use `void`.
+    pub fn close(env: Env, business: Address, id: BytesN<32>) -> Result<(), Error> {
+        business.require_auth();
+        storage::bump_instance(&env);
+        let mut invoice = storage::get_invoice(&env, &id).ok_or(Error::InvoiceNotFound)?;
+        if invoice.business != business {
+            return Err(Error::NotBusiness);
+        }
+        if invoice.status != InvoiceStatus::Open {
+            return Err(Error::NotOpen);
+        }
+        if invoice.paid == 0 {
+            return Err(Error::NothingPaid);
+        }
+        let outstanding = invoice
+            .amount
+            .checked_sub(invoice.paid)
+            .ok_or(Error::ArithmeticOverflow)?;
+        invoice.status = InvoiceStatus::Closed;
+        storage::set_invoice(&env, &invoice);
+
+        Closed {
+            id,
+            paid: invoice.paid,
+            outstanding,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -167,8 +207,9 @@ impl InvoiceRegistry {
     }
 
     pub fn get(env: Env, id: BytesN<32>) -> Result<Invoice, Error> {
+    pub fn get(env: Env, business: Address, id: BytesN<32>) -> Result<Invoice, Error> {
         storage::bump_instance(&env);
-        storage::get_invoice(&env, &id).ok_or(Error::InvoiceNotFound)
+        storage::get_invoice(&env, &business, &id).ok_or(Error::InvoiceNotFound)
     }
 }
 
