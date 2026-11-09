@@ -34,3 +34,12 @@ pub struct Voided {
     #[topic]
     pub id: BytesN<32>,
 }
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Closed {
+    #[topic]
+    pub id: BytesN<32>,
+    pub paid: i128,
+    pub outstanding: i128,
+}
